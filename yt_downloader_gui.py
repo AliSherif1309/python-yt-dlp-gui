@@ -5,6 +5,8 @@ import threading
 import os
 import re
 import traceback
+import tempfile
+import shutil
 from typing import List, Dict, Any, Optional # For type hinting
 
 # --- Constants ---
@@ -292,8 +294,8 @@ class YouTubeDownloaderApp:
         # --- Base yt-dlp Options ---
         base_ydl_opts: Dict[str, Any] = {
             'progress_hooks': [self.my_yt_dlp_progress_hook],
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
+            'nocheckcertificate': False,
+            'ignoreerrors': False,
             'noplaylist': not should_download_playlists,
             'quiet': True,
             'verbose': False,
@@ -360,9 +362,8 @@ class YouTubeDownloaderApp:
              return
 
         # --- Loop Through Each Input URL ---
-        loop_start_index = 0
+        processed_url_count = 0
         for i, current_url in enumerate(urls_to_download):
-            loop_start_index = i
             if self.cancelled:
                 self.update_status("Download cancelled by user.")
                 break
@@ -373,7 +374,9 @@ class YouTubeDownloaderApp:
 
             try:
                 # Execute download for the URL (single or playlist)
-                ydl.download([current_url])
+                result = ydl.download([current_url])
+                if result:
+                    failed_items.append({'item': current_url, 'error': f'yt-dlp exited with code {result}'})
 
             except yt_dlp.utils.DownloadCancelled:
                  self.update_status("Download cancelled during operation.")
@@ -391,28 +394,23 @@ class YouTubeDownloaderApp:
                 print(f"UNEXPECTED ERROR processing URL: {current_url}\n{traceback.format_exc()}")
                 failed_items.append({'item': current_url, 'error': f"Unexpected: {e}"})
 
-        # --- End of Loop ---
+            finally:
+                processed_url_count += 1
+
+        # Snapshot before resetting mutable state; dialogs run on the GUI thread.
+        was_cancelled = self.cancelled
+        self.root.after(0, lambda: self.finish_download(processed_url_count, total_urls, was_cancelled, failed_items))
+
+    def finish_download(self, processed_url_count, total_urls, was_cancelled, failed_items):
         self.reset_ui_after_download()
-
-        # --- Final Summary Message ---
-        processed_url_count = loop_start_index + 1 if not self.cancelled else loop_start_index
-        if self.cancelled and processed_url_count == 0 and total_urls > 0: processed_url_count=1 # Handle cancel before first URL
-        final_status = f"Finished processing {processed_url_count} of {total_urls} input URLs."
-
-        if self.cancelled:
-            messagebox.showwarning("Cancelled", final_status)
-        elif not failed_items:
-            messagebox.showinfo("Finished", f"{final_status}\nCheck download folder(s). Status log may show individual item errors.")
+        final_status = f"Processed {processed_url_count} of {total_urls} input URLs."
+        if was_cancelled:
+            messagebox.showwarning("Cancelled", f"Download cancelled. {final_status}")
+        elif failed_items:
+            failures = "\n".join(f"- {item['item']}: {item['error']}" for item in failed_items[:5])
+            messagebox.showwarning("Finished with Errors", f"{final_status}\n\n{failures}")
         else:
-            fail_count = len(failed_items)
-            final_message = f"{final_status}\n\n" \
-                            f"{fail_count} input URL(s) encountered significant errors (check console log):\n"
-            for fail in failed_items[:5]:
-                final_message += f"- {fail['item']} ({fail['error']})\n"
-            if fail_count > 5:
-                final_message += "- ... (See console for full list)\n"
-            final_message += "\nNote: With 'ignoreerrors', individual items within playlists might fail without being listed here. Check status log during download."
-            messagebox.showwarning("Finished with Errors", final_message)
+            messagebox.showinfo("Finished", f"{final_status}\nCheck download folder(s).")
 
 
     def start_download_thread(self):
@@ -443,9 +441,8 @@ class YouTubeDownloaderApp:
             messagebox.showerror("Path Error", f"The selected download path is not a valid directory:\n{download_path}")
             return
         try: # Test write permissions
-             test_file = os.path.join(download_path, ".permission_test")
-             with open(test_file, "w") as f: f.write("test")
-             os.remove(test_file)
+             with tempfile.TemporaryFile(dir=download_path) as test_file:
+                 test_file.write(b"test")
         except Exception as e:
              messagebox.showerror("Path Error", f"Cannot write to the selected download path:\n{download_path}\nError: {e}")
              return
@@ -479,6 +476,10 @@ class YouTubeDownloaderApp:
              messagebox.showwarning("Invalid Lines Skipped",
                                     f"The following lines were skipped (didn't look like URLs):\n- {display_invalid}")
 
+
+        if shutil.which('ffmpeg') is None:
+            messagebox.showerror("FFmpeg Required", "Install FFmpeg and add it to PATH for audio extraction and video merging.")
+            return
 
         # --- Start Download ---
         self.is_downloading = True

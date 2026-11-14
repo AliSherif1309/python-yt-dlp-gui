@@ -121,3 +121,13 @@ Contributions are welcome! If you have suggestions or find bugs, please feel fre
 ---
 
 <!-- Optional: Add Contact/Acknowledgement section -->
+
+## Maintained source setup
+
+Use Python 3.10 or newer in a virtual environment, then run
+`python -m pip install -r requirements.txt`. Tkinter must be installed with Python
+(on Linux, install your distribution's Python Tk package).
+
+Install FFmpeg separately and add its executable directory to PATH.
+HTTPS certificate validation is enabled. Cancelled jobs are reported as cancelled,
+and failed URLs are listed in the completion dialog.
